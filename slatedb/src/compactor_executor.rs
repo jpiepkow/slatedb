@@ -61,6 +61,8 @@ pub(crate) struct StartCompactionJobArgs {
     pub(crate) id: Ulid,
     /// Canonical compaction job id this job belongs to.
     pub(crate) compaction_id: Ulid,
+    /// Segment containing all compaction inputs and outputs.
+    pub(crate) segment: Bytes,
     /// Destination sorted run id to be produced by this job.
     pub(crate) destination: u32,
     /// Input L0 SSTs for this job.
@@ -85,6 +87,7 @@ impl std::fmt::Debug for StartCompactionJobArgs {
         f.debug_struct("StartCompactionJobArgs")
             .field("id", &self.id)
             .field("job_id", &self.compaction_id)
+            .field("segment", &self.segment)
             .field("destination", &self.destination)
             .field("ssts", &self.l0_sst_views)
             .field("sorted_runs", &self.sorted_runs)
@@ -98,6 +101,7 @@ impl std::fmt::Debug for StartCompactionJobArgs {
 struct SubcompactionArgs {
     // index in to ctx.subcompactions()
     index: usize,
+    segment: Bytes,
     range: BytesRange,
     // Only read when the `compaction_filters` feature builds the filter's
     // `CompactionJobContext`; otherwise the executor uses the job-level
@@ -332,7 +336,8 @@ impl TokioCompactionExecutorInner {
         let retention_min_seq = job_args.retention_min_seq;
         let resume_cursor = match job_args.output_ssts.last() {
             Some(output_sst) => {
-                last_written_key_and_seq(self.table_store.clone(), output_sst).await?
+                last_written_key_and_seq(self.table_store.clone(), output_sst, &job_args.segment)
+                    .await?
             }
             None => None,
         };
@@ -345,6 +350,7 @@ impl TokioCompactionExecutorInner {
             order: IterationOrder::Ascending,
             prefix: None,
             filter_context: None,
+            segment: Some(job_args.segment.clone()),
         };
 
         let max_parallel =
@@ -496,6 +502,7 @@ impl TokioCompactionExecutorInner {
             .enumerate()
             .map(|(index, s)| SubcompactionArgs {
                 index,
+                segment: args.segment.clone(),
                 range: s.range().clone(),
                 destination: args.destination,
                 l0_sst_views: args.l0_sst_views.clone(),
@@ -574,6 +581,7 @@ impl TokioCompactionExecutorInner {
             &self.table_store,
             &args.l0_sst_views,
             &args.sorted_runs,
+            &args.segment,
             self.options.max_subcompactions,
             self.options.max_fetch_tasks,
         )
@@ -784,9 +792,10 @@ impl TokioCompactionExecutorInner {
     ) -> Result<Vec<SsTableHandle>, SlateDBError> {
         let mut all_iter = self.load_iterators(&args, sequence_tracker).await?;
         let mut output_ssts = args.output_ssts.clone();
-        let mut current_writer = self.table_store.table_writer(SsTableId::Compacted(
-            self.rand.rng().gen_ulid(self.clock.as_ref()),
-        ));
+        let mut current_writer = self.table_store.table_writer(
+            SsTableId::from(self.rand.rng().gen_ulid(self.clock.as_ref())),
+            Some(args.segment.clone()),
+        );
         let mut bytes_written = 0usize;
         // Estimate bytes processed within this range before the resume point,
         // if any. For an unbounded range this is the estimate of everything
@@ -842,15 +851,16 @@ impl TokioCompactionExecutorInner {
                 }
                 let finished_writer = mem::replace(
                     &mut current_writer,
-                    self.table_store.table_writer(SsTableId::Compacted(
-                        self.rand.rng().gen_ulid(self.clock.as_ref()),
-                    )),
+                    self.table_store.table_writer(
+                        SsTableId::from(self.rand.rng().gen_ulid(self.clock.as_ref())),
+                        Some(args.segment.clone()),
+                    ),
                 );
                 pending_close = Some(AbortOnDropHandle::new(spawn_bg_task(
                     format!("compactor_sst_close:{:?}", finished_writer.id()),
                     &self.handle,
                     |_| {},
-                    async move { finished_writer.close().await },
+                    async move { finished_writer.close().await.map(|(sst, _)| sst) },
                 )));
                 bytes_written = 0;
                 let total_bytes = start_bytes_processed + all_iter.bytes_processed();
@@ -867,7 +877,7 @@ impl TokioCompactionExecutorInner {
             self.collect_close(pending, &mut output_ssts).await?;
         }
         if !current_writer.is_drained() {
-            let sst = current_writer.close().await?;
+            let (sst, _) = current_writer.close().await?;
 
             self.worker_stats
                 .bytes_compacted
@@ -1012,7 +1022,6 @@ mod tests {
     use crate::bytes_range::BytesRange;
     use crate::format::sst::SsTableFormat;
     use crate::manifest::ManifestCore;
-    use crate::object_stores::ObjectStores;
     use crate::proptest_util::arbitrary;
     use crate::sst_iter::SstView;
     use crate::tablestore::TableStoreKind;
@@ -1046,7 +1055,7 @@ mod tests {
         // Write entries into one or more SSTs, splitting on the same block-size
         // accounting used by the compactor's output writer.
         let mut output_ssts = Vec::new();
-        let mut writer = table_store.table_writer(SsTableId::Compacted(Ulid::new()));
+        let mut writer = table_store.table_writer(SsTableId::from(Ulid::new()), Some(Bytes::new()));
         let mut bytes_written = 0usize;
 
         for (index, entry) in entries.iter().cloned().enumerate() {
@@ -1055,18 +1064,19 @@ mod tests {
             }
 
             if bytes_written > max_sst_size {
-                output_ssts.push(writer.close().await.unwrap());
+                output_ssts.push(writer.close().await.unwrap().0);
                 bytes_written = 0;
 
                 if index + 1 < entries.len() {
-                    writer = table_store.table_writer(SsTableId::Compacted(Ulid::new()));
+                    writer =
+                        table_store.table_writer(SsTableId::from(Ulid::new()), Some(Bytes::new()));
                 } else {
                     return output_ssts;
                 }
             }
         }
 
-        output_ssts.push(writer.close().await.unwrap());
+        output_ssts.push(writer.close().await.unwrap().0);
         output_ssts
     }
 
@@ -1461,7 +1471,7 @@ mod tests {
         let root_path = Path::from("testdb-load-iterators");
         let clock = Arc::new(DefaultSystemClock::new());
         let table_store = Arc::new(TableStore::new(
-            ObjectStores::new(object_store.clone(), None),
+            object_store.clone(),
             SsTableFormat {
                 block_size,
                 ..SsTableFormat::default()
@@ -1549,6 +1559,7 @@ mod tests {
         // expect the iterator to continue at the correct next row.
         let subcompaction_args = SubcompactionArgs {
             index: 0,
+            segment: Bytes::new(),
             range: BytesRange::unbounded(),
             destination: 0,
             l0_sst_views,
@@ -1684,7 +1695,7 @@ mod tests {
                 let root_path = Path::from("testdb-exec-resume");
                 let clock = Arc::new(DefaultSystemClock::new());
                 let table_store = Arc::new(TableStore::new(
-                    ObjectStores::new(object_store.clone(), None),
+                    object_store.clone(),
                     SsTableFormat {
                         block_size: BLOCK_SIZE,
                         ..SsTableFormat::default()
@@ -1732,6 +1743,7 @@ mod tests {
                     .plan_and_execute_compaction_job(StartCompactionJobArgs {
                         id: Ulid::new(),
                         compaction_id: Ulid::new(),
+                        segment: Bytes::new(),
                         destination: 0,
                         l0_sst_views: l0_ssts.clone(),
                         sorted_runs: sorted_runs.clone(),
@@ -1783,6 +1795,7 @@ mod tests {
                         .plan_and_execute_compaction_job(StartCompactionJobArgs {
                             id: Ulid::new(),
                             compaction_id: Ulid::new(),
+                            segment: Bytes::new(),
                             destination: 0,
                             l0_sst_views: l0_ssts.clone(),
                             sorted_runs: sorted_runs.clone(),
@@ -1892,6 +1905,7 @@ mod tests {
         StartCompactionJobArgs {
             id: Ulid::new(),
             compaction_id: Ulid::new(),
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views,
             sorted_runs,
@@ -1918,7 +1932,7 @@ mod tests {
         let root_path = Path::from(path);
         let clock = Arc::new(DefaultSystemClock::new());
         let table_store = Arc::new(TableStore::new(
-            ObjectStores::new(object_store.clone(), None),
+            object_store.clone(),
             SsTableFormat {
                 block_size: 256,
                 ..SsTableFormat::default()
@@ -2383,6 +2397,7 @@ mod tests {
         let args = StartCompactionJobArgs {
             id: Ulid::new(),
             compaction_id: Ulid::new(),
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views: vec![],
             sorted_runs: vec![],
@@ -2439,6 +2454,7 @@ mod tests {
         let args = StartCompactionJobArgs {
             id: Ulid::new(),
             compaction_id: Ulid::new(),
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views,
             sorted_runs,
@@ -2479,7 +2495,7 @@ mod tests {
         let root_path = Path::from("testdb-stop-single-job");
         let clock = Arc::new(DefaultSystemClock::new());
         let table_store = Arc::new(TableStore::new(
-            ObjectStores::new(object_store.clone(), None),
+            object_store.clone(),
             SsTableFormat {
                 block_size: 64,
                 ..SsTableFormat::default()
@@ -2533,6 +2549,7 @@ mod tests {
         executor.start_compaction_job(StartCompactionJobArgs {
             id: stopped_id,
             compaction_id: stopped_id,
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views: l0_sst_views.clone(),
             sorted_runs: vec![],
@@ -2564,6 +2581,7 @@ mod tests {
         executor.start_compaction_job(StartCompactionJobArgs {
             id: second_id,
             compaction_id: second_id,
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views,
             sorted_runs: vec![],
@@ -2613,7 +2631,7 @@ mod tests {
         let root_path = Path::from("testdb-flush-no-block");
         let clock = Arc::new(DefaultSystemClock::new());
         let table_store = Arc::new(TableStore::new(
-            ObjectStores::new(object_store.clone(), None),
+            object_store.clone(),
             SsTableFormat {
                 block_size: 64,
                 ..SsTableFormat::default()
@@ -2671,6 +2689,7 @@ mod tests {
         executor.start_compaction_job(StartCompactionJobArgs {
             id: Ulid::new(),
             compaction_id: Ulid::new(),
+            segment: Bytes::new(),
             destination: 0,
             l0_sst_views,
             sorted_runs: vec![],
@@ -2858,6 +2877,7 @@ mod tests {
             let compaction = StartCompactionJobArgs {
                 id: Ulid::new(),
                 compaction_id: Ulid::new(),
+                segment: Bytes::new(),
                 destination: 0,
                 l0_sst_views: ssts.into_iter().map(SsTableView::identity).collect(),
                 sorted_runs: vec![],
@@ -2911,8 +2931,11 @@ mod tests {
             .await
             .unwrap();
         let encoded_sst = sst_builder.build().await.unwrap();
-        let id = SsTableId::Compacted(Ulid::new());
-        let l0 = table_store.write_sst(&id, &encoded_sst).await.unwrap();
+        let id = SsTableId::from(Ulid::new());
+        let l0 = table_store
+            .write_sst(&id, &encoded_sst, Some(Bytes::new()))
+            .await
+            .unwrap();
         let retention_min_seq_num = 2;
 
         let result = ctx
@@ -3053,8 +3076,11 @@ mod tests {
             .await
             .unwrap();
         let encoded_sst = sst_builder.build().await.unwrap();
-        let id = SsTableId::Compacted(Ulid::new());
-        let l0 = table_store.write_sst(&id, &encoded_sst).await.unwrap();
+        let id = SsTableId::from(Ulid::new());
+        let l0 = table_store
+            .write_sst(&id, &encoded_sst, Some(Bytes::new()))
+            .await
+            .unwrap();
 
         let result = ctx.run_compaction(vec![l0], true, None).await.unwrap();
 
@@ -3151,8 +3177,11 @@ mod tests {
             .await
             .unwrap();
         let encoded_sst = sst_builder.build().await.unwrap();
-        let id = SsTableId::Compacted(Ulid::new());
-        let l0 = table_store.write_sst(&id, &encoded_sst).await.unwrap();
+        let id = SsTableId::from(Ulid::new());
+        let l0 = table_store
+            .write_sst(&id, &encoded_sst, Some(Bytes::new()))
+            .await
+            .unwrap();
 
         let result = ctx.run_compaction(vec![l0], true, None).await;
 
@@ -3214,8 +3243,11 @@ mod tests {
             .await
             .unwrap();
         let encoded_sst = sst_builder.build().await.unwrap();
-        let id = SsTableId::Compacted(Ulid::new());
-        let l0 = table_store.write_sst(&id, &encoded_sst).await.unwrap();
+        let id = SsTableId::from(Ulid::new());
+        let l0 = table_store
+            .write_sst(&id, &encoded_sst, Some(Bytes::new()))
+            .await
+            .unwrap();
 
         let result = ctx.run_compaction(vec![l0], true, None).await;
 

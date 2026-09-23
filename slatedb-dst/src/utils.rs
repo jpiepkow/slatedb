@@ -93,9 +93,11 @@ pub fn build_reader_options(rand: &DbRand) -> DbReaderOptions {
 pub fn build_scan_options(rand: &DbRand, read_durability: DurabilityLevel) -> ScanOptions {
     let mut rng = rand.rng();
     let read_ahead_options = [1, 4 * 1024, 64 * 1024, MIB_1];
-    // Descending sorted-run iteration is currently broken.
-    // See https://github.com/slatedb/slatedb/pull/1995.
-    let order = IterationOrder::Ascending;
+    let order = if rng.random_bool(0.5) {
+        IterationOrder::Ascending
+    } else {
+        IterationOrder::Descending
+    };
 
     ScanOptions::new()
         .with_durability_filter(read_durability)
@@ -143,6 +145,7 @@ pub fn build_settings_compactor(rng: &mut impl Rng) -> CompactorOptions {
         metric_level: None,
         commit_compacted_interval: rng
             .random_range(Duration::from_millis(1)..Duration::from_secs(5)),
+        checkpoint_lifetime: CompactorOptions::default().checkpoint_lifetime,
         worker_heartbeat_timeout,
         object_store_max_retries: None,
     }

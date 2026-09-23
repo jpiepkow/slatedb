@@ -58,6 +58,7 @@ pub use error::{CloseReason, Error, ErrorKind};
 pub use filter::BloomFilter;
 pub use filter_policy::{
     BloomFilterPolicy, Filter, FilterBuilder, FilterContext, FilterPolicy, FilterQuery,
+    FilterTarget,
 };
 pub use format::sst::BlockTransformer;
 pub use garbage_collector::stats as garbage_collector_stats;
@@ -148,7 +149,6 @@ mod mem_table;
 mod memtable_flusher;
 mod merge_iterator;
 mod merge_operator;
-mod object_stores;
 mod ops;
 mod oracle;
 mod partitioned_keyspace;

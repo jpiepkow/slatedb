@@ -1487,7 +1487,6 @@ mod tests {
     use crate::manifest::store::{ManifestStore, StoredManifest};
     use crate::manifest::{LsmTreeState, Manifest, ManifestCore, Segment, VersionedManifest};
     use crate::merge_operator::{MergeOperator, MergeOperatorError};
-    use crate::object_stores::ObjectStores;
     use crate::proptest_util::rng;
     use crate::sst_iter::{SstIterator, SstIteratorOptions};
     use crate::tablestore::{TableStore, TableStoreKind};
@@ -1803,7 +1802,7 @@ mod tests {
             // One data block per entry, so a data range selects a subset.
             .with_sst_block_size(SstBlockSize::Other(1))
             .with_system_clock(system_clock.clone())
-            .with_db_cache(cache.clone())
+            .with_db_cache(cache.clone(), 0)
             .with_block_cache_policy(policy)
             .build()
             .await
@@ -1839,7 +1838,16 @@ mod tests {
         let info = &view.sst.info;
 
         let (_, _, table_store) = build_test_stores(os);
-        let index = table_store.read_index(&view.sst, false).await.unwrap();
+        let index = table_store
+            .read_index(
+                &view.sst,
+                false,
+                Some(Bytes::new()),
+                &crate::reader::ReadTrace::new(None),
+                None,
+            )
+            .await
+            .unwrap();
         let block_metas = index.borrow().block_meta();
         assert_eq!(block_metas.len(), 4);
 
@@ -3830,7 +3838,7 @@ mod tests {
     #[test]
     fn test_calculate_estimated_source_bytes_uses_target_segment_tree() {
         let segment_l0 = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::from(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             SsTableInfo {
                 first_entry: Some(Bytes::from_static(b"seg/a")),
@@ -3840,7 +3848,7 @@ mod tests {
             },
         ));
         let segment_sr_view = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::from(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             SsTableInfo {
                 first_entry: Some(Bytes::from_static(b"seg/m")),
@@ -3882,7 +3890,7 @@ mod tests {
     fn test_calculate_estimated_source_bytes_uses_visible_size_for_borrowed_views() {
         let raw_size = 1_000_000u64;
         let l0_view = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::new(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             SsTableInfo {
                 first_entry: Some(Bytes::from_static(b"seg/a")),
@@ -4176,12 +4184,12 @@ mod tests {
             ..SsTableInfo::default()
         };
         let l0_view_newest: SsTableView = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::from(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             l0_info.clone(),
         ));
         let l0_view_oldest: SsTableView = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::from(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             l0_info.clone(),
         ));
@@ -4191,7 +4199,7 @@ mod tests {
             SortedRun::new(
                 2,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::new()),
+                    SsTableId::from(Ulid::new()),
                     SST_FORMAT_VERSION_LATEST,
                     sr_info.clone(),
                 ))],
@@ -4199,7 +4207,7 @@ mod tests {
             SortedRun::new(
                 1,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::new()),
+                    SsTableId::from(Ulid::new()),
                     SST_FORMAT_VERSION_LATEST,
                     sr_info.clone(),
                 ))],
@@ -4280,12 +4288,12 @@ mod tests {
             ..SsTableInfo::default()
         };
         let l0_view_first: SsTableView = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::from_parts(1, 0)),
+            SsTableId::from(Ulid::from_parts(1, 0)),
             SST_FORMAT_VERSION_LATEST,
             l0_info.clone(),
         ));
         let l0_view_second: SsTableView = SsTableView::identity(SsTableHandle::new(
-            SsTableId::Compacted(Ulid::from_parts(2, 0)),
+            SsTableId::from(Ulid::from_parts(2, 0)),
             SST_FORMAT_VERSION_LATEST,
             l0_info,
         ));
@@ -4294,7 +4302,7 @@ mod tests {
             SortedRun::new(
                 5,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::from_parts(10, 0)),
+                    SsTableId::from(Ulid::from_parts(10, 0)),
                     SST_FORMAT_VERSION_LATEST,
                     sr_info.clone(),
                 ))],
@@ -4302,7 +4310,7 @@ mod tests {
             SortedRun::new(
                 2,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::from_parts(11, 0)),
+                    SsTableId::from(Ulid::from_parts(11, 0)),
                     SST_FORMAT_VERSION_LATEST,
                     sr_info,
                 ))],
@@ -4338,12 +4346,12 @@ mod tests {
         };
         Arc::make_mut(&mut core.tree).l0 = VecDeque::from(vec![
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(Ulid::from_parts(1, 0)),
+                SsTableId::from(Ulid::from_parts(1, 0)),
                 SST_FORMAT_VERSION_LATEST,
                 l0_info.clone(),
             )),
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(Ulid::from_parts(2, 0)),
+                SsTableId::from(Ulid::from_parts(2, 0)),
                 SST_FORMAT_VERSION_LATEST,
                 l0_info,
             )),
@@ -4391,7 +4399,7 @@ mod tests {
                     SortedRun::new(
                         7,
                         [SsTableView::identity(SsTableHandle::new(
-                            SsTableId::Compacted(Ulid::from_parts(70, 0)),
+                            SsTableId::from(Ulid::from_parts(70, 0)),
                             SST_FORMAT_VERSION_LATEST,
                             sr_info.clone(),
                         ))],
@@ -4399,7 +4407,7 @@ mod tests {
                     SortedRun::new(
                         3,
                         [SsTableView::identity(SsTableHandle::new(
-                            SsTableId::Compacted(Ulid::from_parts(30, 0)),
+                            SsTableId::from(Ulid::from_parts(30, 0)),
                             SST_FORMAT_VERSION_LATEST,
                             sr_info,
                         ))],
@@ -4446,7 +4454,7 @@ mod tests {
         Arc::make_mut(&mut core.tree).compacted = vec![SortedRun::new(
             9,
             [SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(Ulid::from_parts(90, 0)),
+                SsTableId::from(Ulid::from_parts(90, 0)),
                 SST_FORMAT_VERSION_LATEST,
                 sr_info,
             ))],
@@ -4482,7 +4490,7 @@ mod tests {
         Arc::make_mut(&mut core.tree).compacted = vec![SortedRun::new(
             4,
             [SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(Ulid::from_parts(40, 0)),
+                SsTableId::from(Ulid::from_parts(40, 0)),
                 SST_FORMAT_VERSION_LATEST,
                 sr_info,
             ))],
@@ -4521,7 +4529,7 @@ mod tests {
             SortedRun::new(
                 8,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::from_parts(80, 0)),
+                    SsTableId::from(Ulid::from_parts(80, 0)),
                     SST_FORMAT_VERSION_LATEST,
                     info.clone(),
                 ))],
@@ -4529,7 +4537,7 @@ mod tests {
             SortedRun::new(
                 4,
                 [SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(Ulid::from_parts(40, 0)),
+                    SsTableId::from(Ulid::from_parts(40, 0)),
                     SST_FORMAT_VERSION_LATEST,
                     info.clone(),
                 ))],
@@ -4546,7 +4554,7 @@ mod tests {
                     compacted: vec![SortedRun::new(
                         3,
                         [SsTableView::identity(SsTableHandle::new(
-                            SsTableId::Compacted(Ulid::from_parts(30, 0)),
+                            SsTableId::from(Ulid::from_parts(30, 0)),
                             SST_FORMAT_VERSION_LATEST,
                             info.clone(),
                         ))],
@@ -4563,7 +4571,7 @@ mod tests {
                         SortedRun::new(
                             9,
                             [SsTableView::identity(SsTableHandle::new(
-                                SsTableId::Compacted(Ulid::from_parts(90, 0)),
+                                SsTableId::from(Ulid::from_parts(90, 0)),
                                 SST_FORMAT_VERSION_LATEST,
                                 info.clone(),
                             ))],
@@ -4571,7 +4579,7 @@ mod tests {
                         SortedRun::new(
                             6,
                             [SsTableView::identity(SsTableHandle::new(
-                                SsTableId::Compacted(Ulid::from_parts(60, 0)),
+                                SsTableId::from(Ulid::from_parts(60, 0)),
                                 SST_FORMAT_VERSION_LATEST,
                                 info,
                             ))],
@@ -4622,7 +4630,7 @@ mod tests {
         Arc::make_mut(&mut core.tree).compacted = vec![SortedRun::new(
             5,
             [SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(Ulid::from_parts(50, 0)),
+                SsTableId::from(Ulid::from_parts(50, 0)),
                 SST_FORMAT_VERSION_LATEST,
                 info.clone(),
             ))],
@@ -4636,7 +4644,7 @@ mod tests {
                     last_compacted_l0_sst_view_id: None,
                     last_compacted_l0_sst_id: None,
                     l0: VecDeque::from(vec![SsTableView::identity(SsTableHandle::new(
-                        SsTableId::Compacted(Ulid::from_parts(1, 0)),
+                        SsTableId::from(Ulid::from_parts(1, 0)),
                         SST_FORMAT_VERSION_LATEST,
                         info,
                     ))]),
@@ -4908,6 +4916,7 @@ mod tests {
                 let args = StartCompactionJobArgs {
                     id: compaction.id(),
                     compaction_id: compaction.id(),
+                    segment: compaction.spec().segment().clone(),
                     destination,
                     l0_sst_views,
                     sorted_runs,
@@ -5000,14 +5009,7 @@ mod tests {
         let db_state = fixture.latest_db_state().await;
         assert_eq!(db_state.tree.l0.len(), 1);
         assert_eq!(db_state.tree.compacted.len(), 1);
-        let l0_id = db_state
-            .tree
-            .l0
-            .front()
-            .unwrap()
-            .sst
-            .id
-            .unwrap_compacted_id();
+        let l0_id = db_state.tree.l0.front().unwrap().sst.id.value();
         let compacted_l0s: Vec<Ulid> = db_state
             .tree
             .compacted
@@ -5015,7 +5017,7 @@ mod tests {
             .unwrap()
             .sst_views()
             .iter()
-            .map(|view| view.sst.id.unwrap_compacted_id())
+            .map(|view| view.sst.id.value())
             .collect();
         assert!(!compacted_l0s.contains(&l0_id));
         assert_eq!(
@@ -5732,7 +5734,7 @@ mod tests {
         let l0_view = Ulid::from_parts(1, 0);
         let make_view = |id: Ulid| {
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(id),
+                SsTableId::from(id),
                 SST_FORMAT_VERSION_LATEST,
                 SsTableInfo::default(),
             ))
@@ -5777,7 +5779,7 @@ mod tests {
         let l0_view = Ulid::from_parts(1, 0);
         let make_view = |id: Ulid| {
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(id),
+                SsTableId::from(id),
                 SST_FORMAT_VERSION_LATEST,
                 SsTableInfo::default(),
             ))
@@ -5821,7 +5823,7 @@ mod tests {
         let l0_view = Ulid::from_parts(1, 0);
         let make_view = |id: Ulid| {
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(id),
+                SsTableId::from(id),
                 SST_FORMAT_VERSION_LATEST,
                 SsTableInfo::default(),
             ))
@@ -5934,7 +5936,7 @@ mod tests {
                 last_compacted_l0_sst_view_id: None,
                 last_compacted_l0_sst_id: None,
                 l0: VecDeque::from(vec![SsTableView::identity(SsTableHandle::new(
-                    SsTableId::Compacted(l0_view_id),
+                    SsTableId::from(l0_view_id),
                     SST_FORMAT_VERSION_LATEST,
                     SsTableInfo::default(),
                 ))]),
@@ -6115,7 +6117,7 @@ mod tests {
         let l0_1 = Ulid::from_parts(1, 0);
         let make_view = |id: Ulid| {
             SsTableView::identity(SsTableHandle::new(
-                SsTableId::Compacted(id),
+                SsTableId::from(id),
                 SST_FORMAT_VERSION_LATEST,
                 SsTableInfo::default(),
             ))
@@ -6198,7 +6200,7 @@ mod tests {
         let manifest_store = Arc::new(ManifestStore::new(&Path::from(PATH), os.clone()));
         let compactions_store = Arc::new(CompactionsStore::new(&Path::from(PATH), os.clone()));
         let table_store = Arc::new(TableStore::new(
-            ObjectStores::new(os.clone(), None),
+            os.clone(),
             sst_format,
             Path::from(PATH),
             None,
@@ -6372,7 +6374,7 @@ mod tests {
     // SsTableView::identity can derive a non-empty effective range.
     fn fake_output_sst() -> SsTableHandle {
         SsTableHandle::new(
-            SsTableId::Compacted(Ulid::new()),
+            SsTableId::from(Ulid::new()),
             SST_FORMAT_VERSION_LATEST,
             SsTableInfo {
                 first_entry: Some(Bytes::from_static(b"a")),
