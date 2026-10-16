@@ -1639,7 +1639,25 @@ impl<P: Into<Path>> CompactionWorkerBuilder<P> {
         let manifest_store = Arc::new(ManifestStore::new(&path, self.main_object_store.clone()));
         let compactions_store =
             Arc::new(CompactionsStore::new(&path, self.main_object_store.clone()));
-        let table_store = Arc::new(TableStore::new(
+
+        // A standalone worker must resolve SSTs this db borrows from another
+        // (a clone's `external_dbs`) against their OWNING db's path. Those
+        // files are never copied, so under this db's root they do not exist:
+        // `PathResolver::from_root` -- what `TableStore::new` uses -- leaves
+        // `external_ssts` empty and every borrowed SST 404s. That is latent
+        // until the db has external SSTs, which a tablet split is exactly what
+        // produces.
+        //
+        // Resolved once at build time, matching how an embedded worker gets
+        // the `Db`'s resolver (built the same way when the `Db` opens).
+        let external_ssts =
+            match StoredManifest::try_load(manifest_store.clone(), self.system_clock.clone())
+                .await?
+            {
+                Some(stored) => stored.manifest().external_ssts(),
+                None => HashMap::new(),
+            };
+        let table_store = Arc::new(TableStore::new_with_fp_registry(
             self.main_object_store,
             SsTableFormat {
                 filter_policies: self.filter_policies.clone(),
@@ -1649,7 +1667,8 @@ impl<P: Into<Path>> CompactionWorkerBuilder<P> {
                 compression_codec: self.options.compression_codec,
                 ..SsTableFormat::default()
             },
-            path,
+            PathResolver::new_with_external_ssts(path, external_ssts),
+            self.fp_registry.clone(),
             None,
             TableStoreKind::Compactor,
             BlockCachePolicy::default(),
