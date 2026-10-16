@@ -11,6 +11,7 @@ use crate::error::SlateDBError;
 use crate::iter::{IterationOrder, RowEntryIterator};
 use crate::merge_operator::{MergeOperatorIterator, MergeOperatorType};
 use crate::prefix_extractor::PrefixExtractor;
+use crate::read_trace::ReadTrace;
 use crate::types::{RowEntry, ValueDeletable};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -341,6 +342,7 @@ impl WriteBatch {
                     it,
                     false,
                     None,
+                    ReadTrace::none(),
                 ));
             } else {
                 return Err(SlateDBError::MergeOperatorMissing);
