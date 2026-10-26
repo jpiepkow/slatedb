@@ -141,7 +141,7 @@ use crate::db::Db;
 use crate::db::DbInner;
 use crate::db_cache::SplitCache;
 use crate::db_cache::{DbCache, DbCacheAndScope, DbCacheWrapper, UnownedDbCache};
-use crate::db_reader::{DbReader, DbReaderMode};
+use crate::db_reader::{DbReader, DbReaderMode, ManifestRefreshHook};
 use crate::db_status::{ClosedResultWriter, DbStatusManager};
 use crate::dispatcher::MessageHandlerExecutor;
 use crate::error::SlateDBError;
@@ -1876,6 +1876,7 @@ pub struct DbReaderBuilder<P: Into<Path>> {
     system_clock: Arc<dyn SystemClock>,
     rand: Arc<DbRand>,
     metrics_recorder: Arc<dyn MetricsRecorder>,
+    refresh_hook: Option<Arc<dyn ManifestRefreshHook>>,
 }
 
 impl<P: Into<Path>> DbReaderBuilder<P> {
@@ -1896,7 +1897,15 @@ impl<P: Into<Path>> DbReaderBuilder<P> {
             system_clock: Arc::new(DefaultSystemClock::default()),
             rand: Arc::new(DbRand::default()),
             metrics_recorder: Arc::new(NoopMetricsRecorder::new()),
+            refresh_hook: None,
         }
+    }
+
+    /// Sets a hook the reader runs each time it finds a newer manifest, before
+    /// reads can see it. See [`ManifestRefreshHook`].
+    pub fn with_manifest_refresh_hook(mut self, hook: Arc<dyn ManifestRefreshHook>) -> Self {
+        self.refresh_hook = Some(hook);
+        self
     }
 
     /// Sets how the reader chooses and refreshes database state.
@@ -2151,6 +2160,7 @@ impl<P: Into<Path>> DbReaderBuilder<P> {
             self.system_clock,
             self.rand,
             recorder,
+            self.refresh_hook,
         )
         .await
         .map_err(crate::Error::from)?;

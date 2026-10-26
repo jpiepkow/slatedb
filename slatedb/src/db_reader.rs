@@ -74,6 +74,48 @@ pub enum DbReaderMode {
     FollowLatest,
 }
 
+/// Runs when a polling [`DbReader`] finds a newer manifest, before it moves to
+/// it.
+///
+/// Reads stay on the installed manifest, still protected by the reader's
+/// checkpoint, until [`before_refresh`](Self::before_refresh) completes, so this
+/// is where to load what the incoming SSTs will need. The refresh waits for it,
+/// and the checkpoint is not refreshed while it runs, so it must finish well
+/// inside the checkpoint lifetime.
+#[async_trait]
+pub trait ManifestRefreshHook: Send + Sync {
+    async fn before_refresh(&self, refresh: &ManifestRefresh);
+}
+
+/// The manifest a [`DbReader`] is about to move to, alongside the one it reads
+/// from now.
+pub struct ManifestRefresh {
+    current: VersionedManifest,
+    next: VersionedManifest,
+    table_store: Arc<TableStore>,
+}
+
+impl ManifestRefresh {
+    pub fn current(&self) -> &VersionedManifest {
+        &self.current
+    }
+
+    pub fn next(&self) -> &VersionedManifest {
+        &self.next
+    }
+
+    /// [`DbCacheManagerOps::warm_sst`] resolved against [`next`](Self::next),
+    /// so it reaches SSTs the reader cannot see yet. An SST `next` does not
+    /// hold is skipped.
+    pub async fn warm_sst(
+        &self,
+        sst_id: SsTableId,
+        targets: &[CacheTarget],
+    ) -> Result<(), crate::Error> {
+        db_cache_manager::warm_sst_impl(&self.table_store, self.next.core(), sst_id, targets).await
+    }
+}
+
 /// Where a reader stops replaying the WAL when it builds its state.
 ///
 /// This is only reached when replay is wanted at all; a reader configured with
@@ -128,6 +170,7 @@ struct DbReaderInner {
     segment_extractor: Option<Arc<dyn PrefixExtractor>>,
     rand: Arc<DbRand>,
     write_buffer_manager: ByteBufferManager,
+    refresh_hook: Option<Arc<dyn ManifestRefreshHook>>,
     /// Kept alive so the underlying `MetricsRecorder` is not dropped while
     /// metric handles in `DbStats` (and other stats structs) are still in use.
     /// See: https://github.com/slatedb/slatedb/issues/1469
@@ -278,6 +321,7 @@ impl DbReaderInner {
             segment_extractor,
             rand,
             write_buffer_manager,
+            refresh_hook: None,
             recorder,
         };
         Ok(inner)
@@ -556,6 +600,19 @@ impl DbReaderInner {
         })
     }
 
+    async fn before_refresh(&self, next_id: u64, next: &Manifest) {
+        let Some(hook) = &self.refresh_hook else {
+            return;
+        };
+        let current = VersionedManifest::from(self.state.read().as_ref());
+        let refresh = ManifestRefresh {
+            current,
+            next: VersionedManifest::from_manifest(next_id, next.clone()),
+            table_store: Arc::clone(&self.table_store),
+        };
+        hook.before_refresh(&refresh).await;
+    }
+
     async fn refresh_latest_manifest(&self) -> Result<(), SlateDBError> {
         let latest_manifest = self.manifest_store.read_latest_manifest().await?;
         self.apply_latest_manifest(latest_manifest).await
@@ -570,6 +627,8 @@ impl DbReaderInner {
             return self.maybe_replay_new_wals().await;
         }
 
+        self.before_refresh(manifest_id, &latest_manifest.manifest)
+            .await;
         let new_state = self
             .rebuild_state(None, manifest_id, latest_manifest.manifest)
             .await?;
@@ -833,6 +892,11 @@ impl MessageHandler<DbReaderMessage> for ManifestPoller {
                     .inner
                     .should_reestablish_checkpoint(&latest_manifest.core)
                 {
+                    // Before replace_checkpoint, so the old checkpoint keeps
+                    // protecting the SSTs reads are served from while the hook runs.
+                    self.inner
+                        .before_refresh(manifest.id(), latest_manifest)
+                        .await;
                     let checkpoint = self.inner.replace_checkpoint(&mut manifest).await?;
                     self.inner.reestablish_checkpoint(checkpoint).await?;
                 } else {
@@ -996,6 +1060,7 @@ impl DbReader {
         system_clock: Arc<dyn SystemClock>,
         rand: Arc<DbRand>,
         recorder: slatedb_common::metrics::MetricsRecorderHelper,
+        refresh_hook: Option<Arc<dyn ManifestRefreshHook>>,
     ) -> Result<Self, SlateDBError> {
         Self::validate_options(mode, &options)?;
 
@@ -1013,24 +1078,24 @@ impl DbReader {
             .db_state()
             .validate_extractor_configuration(segment_extractor.as_deref())?;
 
-        let inner = Arc::new(
-            DbReaderInner::new(
-                manifest_store,
-                table_store,
-                wal_store,
-                wal_reader,
-                options,
-                mode,
-                merge_operator,
-                segment_extractor,
-                system_clock.clone(),
-                rand,
-                recorder,
-                write_buffer_manager,
-                manifest,
-            )
-            .await?,
-        );
+        let mut inner = DbReaderInner::new(
+            manifest_store,
+            table_store,
+            wal_store,
+            wal_reader,
+            options,
+            mode,
+            merge_operator,
+            segment_extractor,
+            system_clock.clone(),
+            rand,
+            recorder,
+            write_buffer_manager,
+            manifest,
+        )
+        .await?;
+        inner.refresh_hook = refresh_hook;
+        let inner = Arc::new(inner);
         let task_executor = MessageHandlerExecutor::new(
             Arc::new(inner.status_manager.clone()),
             system_clock.clone(),
@@ -1532,8 +1597,12 @@ mod tests {
                 CheckpointOptions, CheckpointScope, CloseOptions, FlushOptions, FlushType,
                 MergeOptions, PutOptions, Settings, WriteOptions,
             },
-            db_reader::{DbReader, DbReaderInner, DbReaderMode, DbReaderOptions},
-            db_state::SstType,
+            db_cache::CacheTarget,
+            db_reader::{
+                DbReader, DbReaderInner, DbReaderMode, DbReaderOptions, ManifestRefresh,
+                ManifestRefreshHook,
+            },
+            db_state::{SsTableId, SstType},
             db_stats::DbStats,
             db_status::DbStatusManager,
             dispatcher::MessageHandler,
@@ -1724,6 +1793,7 @@ mod tests {
             test_provider.system_clock.clone(),
             test_provider.rand.clone(),
             slatedb_common::metrics::MetricsRecorderHelper::noop(),
+            None,
         )
         .await
         .unwrap();
@@ -2058,6 +2128,102 @@ mod tests {
         assert!(recording_store.write_kinds().is_empty());
     }
 
+    #[derive(Default)]
+    struct RecordingRefreshHook {
+        /// `(current id, next id, SSTs only next holds)` for each call.
+        calls: std::sync::Mutex<Vec<(u64, u64, Vec<SsTableId>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ManifestRefreshHook for RecordingRefreshHook {
+        async fn before_refresh(&self, refresh: &ManifestRefresh) {
+            let current: Vec<SsTableId> = refresh.current().l0().iter().map(|v| v.sst.id).collect();
+            let added: Vec<SsTableId> = refresh
+                .next()
+                .l0()
+                .iter()
+                .map(|v| v.sst.id)
+                .filter(|id| !current.contains(id))
+                .collect();
+            for id in &added {
+                refresh
+                    .warm_sst(*id, &[CacheTarget::Index, CacheTarget::Filters])
+                    .await
+                    .unwrap();
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push((refresh.current().id(), refresh.next().id(), added));
+        }
+    }
+
+    #[tokio::test]
+    async fn should_run_refresh_hook_before_installing_new_manifest() {
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let path = Path::from("/tmp/test_refresh_hook");
+        let test_provider = TestProvider::new(path.clone(), Arc::clone(&object_store));
+        let db = test_provider.new_db(Settings::default()).await.unwrap();
+        db.put(b"key", b"value").await.unwrap();
+        db.flush_with_options(FlushOptions {
+            flush_type: FlushType::MemTable,
+        })
+        .await
+        .unwrap();
+
+        let hook = Arc::new(RecordingRefreshHook::default());
+        let reader = DbReader::builder(path, Arc::clone(&object_store))
+            .with_options(DbReaderOptions {
+                manifest_poll_interval: Duration::from_secs(60 * 60),
+                checkpoint_lifetime: Duration::from_secs(3 * 60 * 60),
+                ..DbReaderOptions::default()
+            })
+            .with_manifest_refresh_hook(hook.clone())
+            .build()
+            .await
+            .unwrap();
+        let mut poller = ManifestPoller {
+            inner: Arc::clone(&reader.inner),
+        };
+
+        poller.handle(DbReaderMessage::PollManifest).await.unwrap();
+        assert!(
+            hook.calls.lock().unwrap().is_empty(),
+            "an unchanged manifest must not run the hook"
+        );
+
+        let installed = reader.manifest().id();
+        let before: Vec<SsTableId> = reader.manifest().l0().iter().map(|v| v.sst.id).collect();
+        db.put(b"key", b"updated").await.unwrap();
+        db.flush_with_options(FlushOptions {
+            flush_type: FlushType::MemTable,
+        })
+        .await
+        .unwrap();
+        poller.handle(DbReaderMessage::PollManifest).await.unwrap();
+
+        let calls = hook.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        let (current_id, next_id, added) = &calls[0];
+        assert_eq!(*current_id, installed, "hook must run before the install");
+        assert!(*next_id > installed);
+        let after: Vec<SsTableId> = reader.manifest().l0().iter().map(|v| v.sst.id).collect();
+        let expected: Vec<SsTableId> = after
+            .iter()
+            .copied()
+            .filter(|id| !before.contains(id))
+            .collect();
+        assert!(!expected.is_empty());
+        assert_eq!(added, &expected);
+        assert_eq!(
+            reader.get(b"key").await.unwrap(),
+            Some(Bytes::from_static(b"updated"))
+        );
+
+        reader.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn follow_latest_refresh_failure_should_keep_last_good_state() {
         let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
@@ -2088,6 +2254,7 @@ mod tests {
             test_provider.system_clock.clone(),
             test_provider.rand.clone(),
             slatedb_common::metrics::MetricsRecorderHelper::noop(),
+            None,
         )
         .await
         .unwrap();
@@ -3166,6 +3333,7 @@ mod tests {
                 self.system_clock.clone(),
                 self.rand.clone(),
                 slatedb_common::metrics::MetricsRecorderHelper::noop(),
+                None,
             )
             .await
         }
@@ -3386,6 +3554,7 @@ mod tests {
             segment_extractor: None,
             rand: test_provider.rand.clone(),
             write_buffer_manager: ByteBufferManager::unbounded(),
+            refresh_hook: None,
             recorder,
         };
 
@@ -3474,6 +3643,7 @@ mod tests {
             segment_extractor: None,
             rand: test_provider.rand.clone(),
             write_buffer_manager: ByteBufferManager::unbounded(),
+            refresh_hook: None,
             recorder,
         }
     }
