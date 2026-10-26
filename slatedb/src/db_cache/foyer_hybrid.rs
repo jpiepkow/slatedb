@@ -159,7 +159,7 @@ impl DbCache for FoyerHybridCache {
     /// for a no-op disk tier as of foyer 0.22.4), so check the device
     /// capacity instead.
     async fn flush_scope(&self, db_cache_id: u64) -> Result<(), crate::Error> {
-        if self.inner.storage().device().capacity() == 0 {
+        if self.inner.storage().device().is_none_or(|d| d.capacity() == 0) {
             return Ok(());
         }
         self.inner
@@ -410,9 +410,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        assert_eq!(
-            cache.storage().device().capacity(),
-            0,
+        assert!(
+            cache.storage().device().is_none_or(|d| d.capacity() == 0),
             "a cache built with no engine config has no disk tier"
         );
         let cache = FoyerHybridCache::new_with_cache(cache);

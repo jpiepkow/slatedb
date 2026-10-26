@@ -215,6 +215,16 @@ dependencies = [
 
 [[package]]
 name = "asyncband"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94a214ba60d6231afd0e805e3c27c45a1626d9debaa5a5061c45a1ea1b2f1ed0"
+dependencies = [
+ "hashbrown 0.17.1",
+ "slab",
+]
+
+[[package]]
+name = "asyncband"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e52766975a4f080528a898235c51e82e65df9db713419067b5368040eeb5659"
@@ -603,6 +613,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -811,6 +827,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmt"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4a0795ac740cb54d7b3775c9c17345f6aaecf884c01733b39d6017738e0e3e1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840bb056bd99c495c9188198a258ab787c79f306d864db3e6e8451442d6d8366"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71958f69fb2de856c5dd51ac9377e986ca1aa5919f931bf5395a807277f889a0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -835,6 +882,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer",
+ "const-oid",
  "crypto-common 0.2.2",
 ]
 
@@ -1101,14 +1149,14 @@ dependencies = [
 [[package]]
 name = "foyer"
 version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a59f42276891c0a4ce683fcda1aa1b4fd1065d68116c264e4bf49b9d318a0ed"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
 dependencies = [
  "anyhow",
- "asyncband",
+ "asyncband 0.7.1",
  "equivalent",
  "foyer-common",
  "foyer-memory",
+ "foyer-opendal",
  "foyer-storage",
  "foyer-tokio",
  "futures-util",
@@ -1121,8 +1169,7 @@ dependencies = [
 [[package]]
 name = "foyer-common"
 version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "643b47d510032a01e5af70dca288b0c5ec531646c1a8392e793fb5b0c13bef30"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1148,11 +1195,10 @@ dependencies = [
 [[package]]
 name = "foyer-memory"
 version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae51f5089f3d9025ae77f17ea66d2489ac0f82fbb1d91462807bea174d486d82"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
 dependencies = [
  "anyhow",
- "asyncband",
+ "asyncband 0.7.1",
  "bitflags 2.11.1",
  "datasketches",
  "equivalent",
@@ -1171,14 +1217,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "foyer-opendal"
+version = "0.22.6"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
+dependencies = [
+ "foyer-common",
+ "foyer-storage",
+ "foyer-tokio",
+ "futures-util",
+ "opendal-core",
+ "parking_lot",
+]
+
+[[package]]
 name = "foyer-storage"
 version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "118192f532ba013f0cdc607efc22324b9ed855baed185608af0daa986e835c6b"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
 dependencies = [
  "allocator-api2",
  "anyhow",
- "asyncband",
+ "asyncband 0.7.1",
  "bytes",
  "core_affinity",
  "equivalent",
@@ -1206,8 +1264,7 @@ dependencies = [
 [[package]]
 name = "foyer-tokio"
 version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6741d1133dfaab64d3f8a9290bbfed3685084add28f8b6ee7a6264aa4dc26918"
+source = "git+https://github.com/zach-schoenberger/foyer.git?branch=perf%2Fskip-redundant-write-on-insertion#62f73a111b260f9bdbab99400e52165618ba8485"
 dependencies = [
  "tokio",
 ]
@@ -1829,6 +1886,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jiff"
+version = "0.2.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
+dependencies = [
+ "defmt",
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "wasm-bindgen",
+ "windows-link 0.2.1",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+dependencies = [
+ "defmt",
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
+]
+
+[[package]]
 name = "jni"
 version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1940,9 +2053,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.29"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lru"
@@ -2253,6 +2366,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
+name = "opendal-core"
+version = "0.59.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a43405d217dfdfb543f58847336d3af672897dd1939bb7dcf314b63cf364f1c9"
+dependencies = [
+ "anyhow",
+ "asyncband 0.6.7",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "http",
+ "jiff",
+ "log",
+ "md-5",
+ "percent-encoding",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2429,6 +2567,15 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "potential_utf"
