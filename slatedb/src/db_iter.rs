@@ -161,6 +161,7 @@ impl GetIterator {
                     .iter()
                     .map(move |sst| (sst.clone(), SstTraceLevel::SortedRun(sr.id)))
             }))
+            .filter(|(sst, _)| sst.calculate_view_range(ctx.range.clone()).is_some())
             .collect();
         let build = {
             // One context clone per get; each SST takes a refcount, not a copy.
